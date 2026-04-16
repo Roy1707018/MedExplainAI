@@ -1,32 +1,16 @@
+import requests
 import streamlit as st
 import time
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 st.set_page_config(page_title="MedExplainAI", layout="centered")
 
-@st.cache_resource
-def load_model():
-    model_name = "mistralai/Mistral-7B-Instruct-v0.1"
+MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.1"
+API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_ID}"
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=bnb_config,
-        device_map="auto"
-    )
-
-    return tokenizer, model
-
-tokenizer, model = load_model()
+def get_hf_token():
+    if "HF_TOKEN" in st.secrets:
+        return st.secrets["HF_TOKEN"]
+    return None
 
 def simplify_prompt(text):
     return f"""
@@ -37,10 +21,14 @@ Rules:
 - Avoid medical jargon
 - Keep it short and easy to understand
 - Do NOT give diagnosis
+- Do NOT give treatment advice
+- End with: "Please consult a doctor for medical advice."
 
 Text:
 {text}
-"""
+
+Simplified explanation:
+""".strip()
 
 def qa_prompt(question):
     return f"""
@@ -51,65 +39,76 @@ Rules:
 - Do NOT provide diagnosis
 - Do NOT give treatment advice
 - Keep it easy to understand
-- Add a short note suggesting to consult a doctor
+- Use short bullet points if helpful
+- End with: "Please consult a doctor for medical advice."
 
 Question:
 {question}
-"""
 
-def clean_output(result, original_prompt):
-    if result.startswith(original_prompt):
-        result = result[len(original_prompt):].strip()
-    return result
+Answer:
+""".strip()
+
+def call_hf_inference(prompt, max_new_tokens=220, temperature=0.3):
+    hf_token = get_hf_token()
+    if not hf_token:
+        raise ValueError("HF_TOKEN not found in Streamlit secrets.")
+
+    headers = {
+        "Authorization": f"Bearer {hf_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "return_full_text": False
+        }
+    }
+
+    response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+
+    if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
+        return data[0]["generated_text"].strip()
+
+    return str(data)
 
 def simplify_text(text):
     prompt = simplify_prompt(text)
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=150,
-        temperature=0.3,
-        pad_token_id=tokenizer.eos_token_id
-    )
-
-    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return clean_output(result, prompt)
+    return call_hf_inference(prompt, max_new_tokens=160, temperature=0.3)
 
 def answer_question(question):
     prompt = qa_prompt(question)
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=250,
-        temperature=0.3,
-        pad_token_id=tokenizer.eos_token_id
-    )
-
-    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return clean_output(result, prompt)
+    return call_hf_inference(prompt, max_new_tokens=220, temperature=0.3)
 
 st.title("MedExplainAI")
-st.write("A web-based medical text simplification and medical question-answering system.")
-st.warning("This system is for educational purposes only. It does not provide diagnosis or treatment. Please consult a licensed doctor for medical advice.")
+st.write("A web-based clinical text simplification and medical question-answering system using Mistral 7B.")
+st.warning(
+    "This system is for educational purposes only. "
+    "It does not provide diagnosis or treatment. "
+    "Please consult a licensed doctor for medical advice."
+)
 
 mode = st.selectbox("Choose a task", ["Simplify Clinical Text", "Ask Medical Question"])
-user_input = st.text_area("Enter your text or question here")
+user_input = st.text_area("Enter your text or question here", height=180)
 
 if st.button("Generate"):
     if not user_input.strip():
         st.error("Please enter some text first.")
     else:
         start_time = time.time()
+        try:
+            if mode == "Simplify Clinical Text":
+                output = simplify_text(user_input)
+            else:
+                output = answer_question(user_input)
 
-        if mode == "Simplify Clinical Text":
-            output = simplify_text(user_input)
-        else:
-            output = answer_question(user_input)
-
-        end_time = time.time()
-
-        st.subheader("Result")
-        st.write(output)
-        st.write(f"Response time: {round(end_time - start_time, 2)} seconds")
+            end_time = time.time()
+            st.subheader("Result")
+            st.write(output)
+            st.caption(f"Response time: {round(end_time - start_time, 2)} seconds")
+        except Exception as e:
+            st.error(f"Request failed: {e}")
