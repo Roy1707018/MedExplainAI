@@ -5,8 +5,6 @@ import streamlit as st
 st.set_page_config(page_title="MedExplainAI", layout="centered")
 
 API_URL = "https://router.huggingface.co/v1/chat/completions"
-
-# Safer deployable choice because provider support is visible on the model page
 MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai"
 
 def get_hf_token():
@@ -21,14 +19,17 @@ def simplify_messages(text):
             "content": (
                 "You are a medical text simplification assistant. "
                 "Rewrite clinical text in simple, patient-friendly language. "
-                "Do not diagnose. Do not give treatment advice. "
-                "Keep the meaning correct and the wording easy to understand. "
+                "Keep the meaning correct. "
+                "Avoid medical jargon. "
+                "Do not diagnose. "
+                "Do not give treatment advice. "
+                "Use short and clear sentences. "
                 "End with: Please consult a doctor for medical advice."
             ),
         },
         {
             "role": "user",
-            "content": f"Simplify this medical text:\n\n{text}"
+            "content": f"Simplify this clinical text:\n\n{text}"
         },
     ]
 
@@ -38,9 +39,12 @@ def qa_messages(question):
             "role": "system",
             "content": (
                 "You are a medical educational assistant. "
-                "Answer in simple language. "
-                "Give educational information only. "
-                "Do not diagnose. Do not give treatment instructions. "
+                "Answer the question clearly and directly. "
+                "If the question asks for symptoms, list symptoms. "
+                "Use bullet points when possible. "
+                "Keep the language simple and easy to understand. "
+                "Do not diagnose. "
+                "Do not give treatment advice. "
                 "End with: Please consult a doctor for medical advice."
             ),
         },
@@ -69,7 +73,6 @@ def call_hf_chat(messages, max_tokens=220, temperature=0.3):
 
     response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
 
-    # Helpful debugging if HF returns a 4xx/5xx
     if not response.ok:
         raise RuntimeError(f"{response.status_code} {response.text}")
 
@@ -98,15 +101,19 @@ if st.button("Generate"):
         st.error("Please enter some text first.")
     else:
         start_time = time.time()
+
         try:
-            if mode == "Simplify Clinical Text":
-                output = simplify_text(user_input)
-            else:
-                output = answer_question(user_input)
+            with st.spinner("Generating response..."):
+                if mode == "Simplify Clinical Text":
+                    output = simplify_text(user_input)
+                else:
+                    output = answer_question(user_input)
 
             end_time = time.time()
-            st.subheader("Result")
-            st.write(output)
+
+            st.subheader("AI Response")
+            st.markdown(output)
             st.caption(f"Response time: {round(end_time - start_time, 2)} seconds")
+
         except Exception as e:
             st.error(f"Request failed: {e}")
