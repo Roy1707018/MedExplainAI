@@ -1,54 +1,56 @@
+import time
 import requests
 import streamlit as st
-import time
 
 st.set_page_config(page_title="MedExplainAI", layout="centered")
 
-MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.1"
-API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL_ID}"
+API_URL = "https://router.huggingface.co/v1/chat/completions"
+
+# Safer deployable choice because provider support is visible on the model page
+MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai"
 
 def get_hf_token():
     if "HF_TOKEN" in st.secrets:
         return st.secrets["HF_TOKEN"]
     return None
 
-def simplify_prompt(text):
-    return f"""
-Simplify the following medical text into very simple and clear language.
+def simplify_messages(text):
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a medical text simplification assistant. "
+                "Rewrite clinical text in simple, patient-friendly language. "
+                "Do not diagnose. Do not give treatment advice. "
+                "Keep the meaning correct and the wording easy to understand. "
+                "End with: Please consult a doctor for medical advice."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Simplify this medical text:\n\n{text}"
+        },
+    ]
 
-Rules:
-- Keep the meaning correct
-- Avoid medical jargon
-- Keep it short and easy to understand
-- Do NOT give diagnosis
-- Do NOT give treatment advice
-- End with: "Please consult a doctor for medical advice."
+def qa_messages(question):
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a medical educational assistant. "
+                "Answer in simple language. "
+                "Give educational information only. "
+                "Do not diagnose. Do not give treatment instructions. "
+                "End with: Please consult a doctor for medical advice."
+            ),
+        },
+        {
+            "role": "user",
+            "content": question
+        },
+    ]
 
-Text:
-{text}
-
-Simplified explanation:
-""".strip()
-
-def qa_prompt(question):
-    return f"""
-Answer the following medical question in simple language.
-
-Rules:
-- Give educational information only
-- Do NOT provide diagnosis
-- Do NOT give treatment advice
-- Keep it easy to understand
-- Use short bullet points if helpful
-- End with: "Please consult a doctor for medical advice."
-
-Question:
-{question}
-
-Answer:
-""".strip()
-
-def call_hf_inference(prompt, max_new_tokens=220, temperature=0.3):
+def call_hf_chat(messages, max_tokens=220, temperature=0.3):
     hf_token = get_hf_token()
     if not hf_token:
         raise ValueError("HF_TOKEN not found in Streamlit secrets.")
@@ -59,30 +61,26 @@ def call_hf_inference(prompt, max_new_tokens=220, temperature=0.3):
     }
 
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "return_full_text": False
-        }
+        "model": MODEL_ID,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
     }
 
     response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
-    response.raise_for_status()
+
+    # Helpful debugging if HF returns a 4xx/5xx
+    if not response.ok:
+        raise RuntimeError(f"{response.status_code} {response.text}")
+
     data = response.json()
-
-    if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-        return data[0]["generated_text"].strip()
-
-    return str(data)
+    return data["choices"][0]["message"]["content"].strip()
 
 def simplify_text(text):
-    prompt = simplify_prompt(text)
-    return call_hf_inference(prompt, max_new_tokens=160, temperature=0.3)
+    return call_hf_chat(simplify_messages(text), max_tokens=180, temperature=0.2)
 
 def answer_question(question):
-    prompt = qa_prompt(question)
-    return call_hf_inference(prompt, max_new_tokens=220, temperature=0.3)
+    return call_hf_chat(qa_messages(question), max_tokens=240, temperature=0.3)
 
 st.title("MedExplainAI")
 st.write("A web-based clinical text simplification and medical question-answering system using Mistral 7B.")
